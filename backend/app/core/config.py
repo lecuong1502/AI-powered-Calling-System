@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://voicecall:voicecall_dev_password@localhost:5432/voicecall"
 
     # MongoDB
-    mongo_url: str = "mongodb://voicecall:voicecall_dev_password@localhost:27017/voicecall_logs"
+    mongo_url: str = "mongodb://voicecall:voicecall_dev_password@localhost:27017/voicecall_logs?authSource=admin"
     mongo_db: str = "voicecall_logs"
 
     # Redis
@@ -54,6 +54,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings
+    return Settings()
 
-settings = get_settings
+settings = get_settings()

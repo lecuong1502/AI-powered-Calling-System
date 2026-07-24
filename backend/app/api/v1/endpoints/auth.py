@@ -1,10 +1,14 @@
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.core.database import get_db
 from app.core.security import (
@@ -18,8 +22,13 @@ from app.models.pg import Tenant, TenantUser, TenantPlan
 
 router = APIRouter()
 
+# Shared HTTPBearer scheme — reused as a FastAPI Depends
+_http_bearer = HTTPBearer(auto_error=True)
 
+
+# ---------------------------------------------------------------------------
 # Schemas
+# ---------------------------------------------------------------------------
 
 class RegisterRequest(BaseModel):
     company_name: str
@@ -52,20 +61,23 @@ class MeResponse(BaseModel):
     tenant_name: str
 
 
-# Helpers
+# ---------------------------------------------------------------------------
+# Dependency: get_current_user
+# BUG #2 FIX — now a proper FastAPI dependency using HTTPBearer
+# ---------------------------------------------------------------------------
 
 async def get_current_user(
-    token: str,
-    db: AsyncSession,
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: AsyncSession = Depends(get_db),
 ) -> TenantUser:
-    """Decode JWT and return the TenantUser. Raises 401 on failure."""
+    """Decode JWT from Authorization header and return the active TenantUser."""
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = decode_token(token)
+        payload = decode_token(credentials.credentials)
         user_id: str = payload.get("sub")
         if not user_id or payload.get("type") != "access":
             raise credentials_exc
@@ -79,7 +91,22 @@ async def get_current_user(
     return user
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _slugify(text: str) -> str:
+    """Convert a company name to a URL-safe slug."""
+    slug = text.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)       # remove special chars
+    slug = re.sub(r"[\s_]+", "-", slug)         # spaces → hyphens
+    slug = re.sub(r"-+", "-", slug).strip("-")  # collapse hyphens
+    return slug[:50]
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
+# ---------------------------------------------------------------------------
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
@@ -92,8 +119,18 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # BUG #4 FIX — make slug unique by appending a numeric suffix when needed
+    base_slug = _slugify(body.company_name)
+    slug = base_slug
+    suffix = 1
+    while True:
+        collision = await db.execute(select(Tenant).where(Tenant.slug == slug))
+        if not collision.scalar_one_or_none():
+            break
+        slug = f"{base_slug}-{suffix}"
+        suffix += 1
+
     # Create tenant
-    slug = body.company_name.lower().replace(" ", "-")[:50]
     tenant = Tenant(
         name=body.company_name,
         slug=slug,
@@ -112,11 +149,16 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         role="admin",
     )
     db.add(user)
-    await db.flush()
+
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Registration failed due to a conflict. Please try again.")
 
     token_subject = str(user.id)
     return TokenResponse(
-        access_token=create_access_token(token_subject, {"tenant_id": str(tenant.id)}),
+        access_token=create_access_token(token_subject, {"tenant_id": str(tenant.id), "role": "admin"}),
         refresh_token=create_refresh_token(token_subject),
     )
 
@@ -165,4 +207,44 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
             str(user.id), {"tenant_id": str(user.tenant_id), "role": user.role}
         ),
         refresh_token=create_refresh_token(str(user.id)),
+    )
+
+
+# BUG #3 FIX — add the missing /me endpoint
+@router.get("/me", response_model=MeResponse)
+async def me(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the currently authenticated user's profile, with tenant name."""
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = decode_token(credentials.credentials)
+        user_id: str = payload.get("sub")
+        if not user_id or payload.get("type") != "access":
+            raise credentials_exc
+    except JWTError:
+        raise credentials_exc
+
+    # Load user + tenant in a single JOIN query
+    result = await db.execute(
+        select(TenantUser)
+        .options(joinedload(TenantUser.tenant))
+        .where(TenantUser.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise credentials_exc
+
+    return MeResponse(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        tenant_id=str(user.tenant_id),
+        tenant_name=user.tenant.name,
     )
