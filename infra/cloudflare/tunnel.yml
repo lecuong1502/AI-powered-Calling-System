@@ -1,0 +1,26 @@
+# Cloudflare Tunnel configuration
+# Setup steps:
+#   1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/
+#   2. Authenticate:  cloudflared tunnel login
+#   3. Create tunnel: cloudflared tunnel create voicecall-dev
+#   4. Copy the tunnel UUID into <YOUR_TUNNEL_UUID> below
+#   5. Run:           cloudflared tunnel --config infra/cloudflare/tunnel.yml run
+
+tunnel: <YOUR_TUNNEL_UUID>
+credentials-file: ~/.cloudflared/<YOUR_TUNNEL_UUID>.json
+
+ingress:
+  # Main API
+  - hostname: api.yourdomain.com
+    service: http://localhost:8000
+
+  # Qdrant (internal — only expose if needed for external tooling)
+  # - hostname: qdrant.yourdomain.com
+  #   service: http://localhost:6333
+
+  # MinIO console (dev only)
+  - hostname: storage.yourdomain.com
+    service: http://localhost:9001
+
+  # Catch-all (required)
+  - service: http_status:404

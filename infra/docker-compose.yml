@@ -1,0 +1,118 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AI Voice Call Platform — local dev infrastructure
+#  Services: PostgreSQL · MongoDB · Redis · Qdrant · MinIO
+#
+#  Usage:
+#    docker compose -f infra/docker-compose.yml up -d
+#    docker compose -f infra/docker-compose.yml down
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  TZ: Asia/Ho_Chi_Minh
+
+services:
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: voicecall_postgres
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      POSTGRES_DB: voicecall
+      POSTGRES_USER: voicecall
+      POSTGRES_PASSWORD: voicecall_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voicecall -d voicecall"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB
+  mongo:
+    image: mongo:7.0
+    container_name: voicecall_mongo
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      MONGO_INITDB_ROOT_USERNAME: voicecall
+      MONGO_INITDB_ROOT_PASSWORD: voicecall_dev_password
+      MONGO_INITDB_DATABASE: voicecall_logs
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7.4-alpine
+    container_name: voicecall_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Qdrant (Vector DB)
+  qdrant:
+    image: qdrant/qdrant:v1.12.0
+    container_name: voicecall_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      <<: *common-env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (Object Storage — local S3 replacement)
+  minio:
+    image: minio/minio:latest
+    container_name: voicecall_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      <<: *common-env
+      MINIO_ROOT_USER: voicecall
+      MINIO_ROOT_PASSWORD: voicecall_dev_password
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console → http://localhost:9001
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  qdrant_data:
+  minio_data:

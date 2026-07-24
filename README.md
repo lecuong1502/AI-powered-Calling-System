@@ -263,11 +263,11 @@ Post-call Processing
 
 ### Phase 0 — Foundation *(Month 1–2)*
 
-- [ ] ERD design, API contract, repo structure
-- [ ] FastAPI skeleton + JWT auth + tenant management
-- [ ] PostgreSQL + MongoDB + Redis local setup
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Cloudflare Tunnel to expose dev server
+- [x] ERD design, API contract, repo structure
+- [x] FastAPI skeleton + JWT auth + tenant management
+- [x] PostgreSQL + MongoDB + Redis local setup
+- [x] CI/CD pipeline (GitHub Actions)
+- [x] Cloudflare Tunnel to expose dev server
 
 ### Phase 1 — Core Call Engine *(Month 3–4)*
 
